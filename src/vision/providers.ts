@@ -10,7 +10,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { VisionExecuteOptions, VisionFailure, VisionResult } from '../config/types.ts';
-import { assertSafeRemoteTarget, DEFAULT_TEMP, isPathAllowed } from '../security/index.ts';
+import {
+  assertSafeRemoteTarget,
+  DEFAULT_TEMP,
+  isPathAllowed,
+  isPlainFileAt,
+} from '../security/index.ts';
 import type { VisionProvider } from './provider.ts';
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB
@@ -101,6 +106,11 @@ function readFileAsBase64(path: string, allowedReadRoots: readonly string[] = []
   const resolved = resolve(path);
   const allowed = isPathAllowed(resolved, [...ALLOWED_PATHS, DEFAULT_TEMP, ...allowedReadRoots]);
   if (!allowed) {
+    throw new Error('PATH_DENIED');
+  }
+  // Best-effort TOCTOU re-check: lstat the final component right before the
+  // read so a symlink planted at the leaf cannot swap in a denied target.
+  if (!isPlainFileAt(resolved)) {
     throw new Error('PATH_DENIED');
   }
   const buffer = readFileSync(resolved);

@@ -143,8 +143,8 @@ export function extractDescriptions(
   while (true) {
     match = regex.exec(content);
     if (match === null) break;
-    const index = Number.parseInt(match[1], 10);
-    const summary = match[2];
+    const index = Number.parseInt(match[1] ?? '', 10);
+    const summary = match[2] ?? '';
     descriptions.push({ summary, raw: { _index: index } });
   }
 
