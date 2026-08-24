@@ -1,0 +1,40 @@
+# dsh-omnivision bundle layer: applies automatically when installed.
+#
+# KV-cache safe by design: all vision processing happens in the pre-step
+# bridge, DeepSeek always receives pure text. No request structure changes.
+
+# Mount plugin row. Config is intentionally minimal: the keys below restate
+# DEFAULT_CONFIG values (src/config/schema.ts) for explicitness — only
+# progressiveTools is pinned on purpose. freeZen / cache / limits etc. are
+# covered by DEFAULT_CONFIG and therefore omitted.
+#
+# Progressive tools disabled by default (issue #81 equivalent):
+# keeping full tool schema stable from session start avoids mid-conversation
+# tool-list expansion that can invalidate long-context KV/prefix caches.
+# (Declarative today: the tool registry is always fully registered; the flag
+# reserves the intended behavior.)
+- insert:
+    - id: omnivision
+      name: 'dsh-omnivision'
+      config:
+        progressiveTools: false
+        mode: auto
+        routing: pre-step
+        freeFallback: true
+
+# DSH attachment-ingest policy: match dsh-vision-router's generous limits.
+# 20MiB / 100MP / 10000px longest edge covers 4K/phone photos and common
+# long screenshots.
+#
+# NOTE — two different layers, do not conflate:
+#   * attachment-local limits below = what the DSH harness accepts and stores
+#     when a user attaches an image (ingest gate, harness-side keys).
+#   * plugin `maxImageBytes` (DEFAULT_CONFIG: 4MiB) = what dsh-omnivision is
+#     willing to send to vision providers for processing (processing gate).
+#     Images above the plugin limit stay in the UI but are reported via the
+#     plugin's failures API instead of being described.
+- id: attachment-local
+  config:
+    maxImageBytes: 20971520
+    maxImagePixels: 100000000
+    maxImageDimension: 10000
