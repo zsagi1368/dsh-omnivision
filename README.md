@@ -1,309 +1,286 @@
+<div align="center">
+
 # dsh-omnivision
 
-[English](README.md) | [中文](README.zh.md)
+**Give DeepSeek eyes — without touching its KV cache.**
 
-A Cordis plugin package for **DeepSeek Harness (DSH)** that converts images into text
-descriptions **before** they reach DeepSeek — so the model only ever sees pure text and its
-KV cache / prompt-prefix cache is never disturbed by multimodal content. The UI keeps
-showing the original images through a "shadow history" mechanism.
+A vision bridge plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness):
+every image is converted to a faithful text description *before* it reaches the model,
+so the request stays pure text and prefix caches stay warm. The chat UI keeps showing
+the original images.
 
-> **Status: alpha, pre-integration-testing.** The plugin core, provider chain, tools and
-> security layers are implemented and unit/integration tested at the library level, but it
-> has **not yet been wired into a live DeepSeek Harness runtime**. The `PluginContext` /
-> `processMessage` contract below is the integration surface. Treat everything as
-> subject to change.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522.19-339933?logo=node.js&logoColor=white)](package.json)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
+[![Tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)](tests)
+[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](reports)
 
-## How it works (KV-cache-safe architecture)
+**English** · [简体中文](README.zh.md)
+
+</div>
+
+---
+
+## Why
+
+Pasting images into an LLM conversation normally means switching to a multimodal message
+format — which invalidates the prompt prefix cache on every image, slows every subsequent
+turn, and couples you to a single vendor's vision API.
+
+**dsh-omnivision takes a different path:** images never enter the model request at all.
+A pre-step bridge describes them in text first. DeepSeek receives exactly the same
+pure-text message shape it would receive without any image — same structure, same
+cacheability — while the user still sees their pictures in the UI via a shadow-history
+layer.
+
+## How it works
 
 ```
-User pastes an image
-        |
-        v
-+-----------------------------------------------+
-| Pre-step bridge (this plugin, before DeepSeek) |
-|  1. validate path / size / symlink             |
-|  2. description cache lookup (stable key)      |
-|  3. provider failover chain -> text            |
-|  4. rewrite the message to pure text           |
-+-----------------------------------------------+
-        |
-        v   text markers like [Image 1: ...] / [已识图1: ...]
-   DeepSeek  <---- pure text only; KV cache untouched
-        |
-        v
- Shadow history: the UI keeps the original image event,
- the model-side history holds the text replacement
+ user pastes image                    ┌──────────────────────────────┐
+        │                             │  vision provider chain       │
+        ▼                             │  LM Studio → Ollama →        │
+┌──────────────────┐    describe      │  OpenAI / Anthropic /        │
+│ validate         │ ───────────────► │  Gemini / Zhipu / Zen /      │
+│ path · size      │   (text back)    │  OVH Free (anonymous)        │
+│ symlink          │                  └──────────────────────────────┘
+└──────────────────┘                            │
+        │                                       ▼
+        │                              [已识图1: a screenshot of …]
+        ▼                                       │
+┌──────────────────┐                             ▼
+│ shadow history   │                     pure-text message ──►  DeepSeek
+│ UI shows image,  │                     (identical shape to a
+│ model sees text  │                      no-image request)
+└──────────────────┘
 ```
 
-Two properties make this cache-safe:
+Three design decisions make this robust:
 
-- **Pure text in, pure text out.** DeepSeek never receives image parts; the request
-  structure of the conversation is unchanged by images.
-- **Stable query templates.** The vision query sent to providers is a fixed template
-  derived from `language` + `visionDepth` — never the raw user message. Consequences:
-  the same image hits the local description cache across different user prompts, and
-  provider-side prefix caches stay warm because the prompt prefix is predictable.
+| Decision | Effect |
+|---|---|
+| **Stable query templates** — descriptions are requested through fixed prompts derived from `language` × `visionDepth`, never from raw user input | The same image hits the local cache across different user messages, and provider-side prefix caches see a repeated, predictable prompt |
+| **Failures never touch the model context** — failed images produce no marker at all; they are reported to the UI through a structured `failures[]` array | Internal errors, provider names, and network details can never leak into the conversation |
+| **Everything is configuration-driven** — models, endpoints, API-key env names, timeouts, cache size/TTL are plain config fields | Swap vendors or point at a private gateway without touching code |
 
-Shadow history: when `processMessage` is given an `eventId`, it returns
-`shadows: [{ surfaceOp: keep, modelOp: replace }]` pairs — the host UI keeps the image
-for display, while the model-visible history gets the description text.
+## Features
 
-## Provider chain (failover order)
+- 🔒 **KV-cache safe by construction** — the model request shape is byte-identical with or without images
+- 🏭 **Provider factories** — OpenAI, Anthropic, Gemini, Zhipu, OVH Free, Ollama, LM Studio, plus a generic OpenAI-compatible factory for anything else
+- 🆓 **Zero-config operation** — with no keys at all, the anonymous OVH endpoint still provides vision
+- 🧯 **Clean failure contract** — per-image failure reasons (`too_large` / `symlink` / `provider`) surfaced out-of-band
+- 🛠️ **Tool registry** — nine dispatchable vision tools with argument validation and secret redaction
+- ⚡ **Real resilience** — persistent circuit breaker, failover chain with enforced timeout budgets, LRU description cache with TTL and session isolation
+- 🛡️ **Defense in depth** — segment-aware path policy, symlink rejection, size limits, SSRF guards, three-layer credential redaction
 
-Providers are tried in order until one succeeds:
+## Installation
 
-1. `extraProviders` (programmatic injection seam, mainly for tests)
-2. `providers[]` config entries, in declared order
-3. LM Studio (if `localLmStudio.enabled`)
-4. Ollama (if `localOllama.enabled`)
-5. Free cloud tail (if `freeFallback: true`):
-   - `freeCloudFirst: false` (default): OVH -> Zhipu (if key) -> Zen (if key)
-   - `freeCloudFirst: true`: Zhipu (if key) -> Zen (if key) -> OVH
-
-| Provider | `providers[].name` | Default model | Auth | Notes |
-|---|---|---|---|---|
-| OpenAI | `openai` | `gpt-4o` | `OPENAI_API_KEY` | OpenAI-compatible `/v1` |
-| Anthropic | `anthropic` | `claude-3-5-sonnet-20241022` | `ANTHROPIC_API_KEY` | Messages API |
-| Google Gemini | `gemini` | `gemini-2.0-flash` | `GEMINI_API_KEY` | key via `x-goog-api-key` header |
-| Zhipu | `zhipu` | `glm-4.6v-flash` | `ZAI_API_KEY` | free tier, key required |
-| OVH Free | `ovh` (alias `ovh-free`) | `Qwen2.5-VL-72B-Instruct` | none | fully anonymous; the zero-config default |
-| OpenCode Zen | — (via `freeZen`) | `big-pickle` (config) | `OPENCODE_API_KEY` (configurable) | free tier, sign-in key required |
-| Ollama | — (via `localOllama`) | `qwen2.5-vl:7b` | none | local, SSRF check exempted |
-| LM Studio | — (via `localLmStudio`) | `qwen2.5-vl-7b` | none | local, SSRF check exempted |
-| Any OpenAI-compatible | any other name + `baseUrl` | required via `model` | optional via `apiKeyEnv` | generic adapter |
-
-All defaults are overridable per entry via `providers[].model` / `baseUrl` / `apiKeyEnv`.
-
-### Environment variables
-
-| Env var | Used by | Required |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI provider | no |
-| `ANTHROPIC_API_KEY` | Anthropic provider | no |
-| `GEMINI_API_KEY` | Gemini provider | no |
-| `ZAI_API_KEY` | Zhipu (auto-joins the free tail when set) | no |
-| `OPENCODE_API_KEY` | OpenCode Zen free tier (auto-joins when `freeZen.enabled` and set) | no |
-
-**Every key is optional.** With zero configuration and zero keys, the chain still contains
-the anonymous OVH endpoint, so image description works out of the box (subject to OVH's
-uncontrolled rate limits). Custom env var names can be used via `providers[].apiKeyEnv`
-and `freeZen.apiKeyEnv`.
-
-### Resilience
-
-- **Circuit breaker** (in-memory, owned by the plugin instance, shared across calls,
-  max 128 provider entries): `AUTH` / `REGION` / `TOS` failures block a provider for
-  10 min; `RATE_LIMIT` / `QUOTA` for 60 s; other failures for 30 s.
-- **Timeouts**: `timeoutMs` is the total budget for one image across the whole chain;
-  `visionTaskTimeoutMs` is the per-provider budget, enforced with a composed
-  `AbortSignal`. Remaining-budget arithmetic prevents a late provider from overrunning.
-- **Failure classification**: thrown errors are classified (`AUTH`, `RATE_LIMIT`,
-  `TIMEOUT`, `NETWORK`, ...) and secret-redacted; non-retryable failures stop the chain
-  instead of pointlessly retrying.
-
-### Caching
-
-Per-plugin LRU description cache with configurable TTL and entry count. The cache key is
-`sha256(sessionId | mode | image contentHash | query template)` — session-scoped, and
-stable across different user prompts because the query is always a template, never raw
-user input.
-
-## Modes
-
-| `mode` | Pre-step behavior | What DeepSeek receives |
-|---|---|---|
-| `auto` (default) | Full description markers appended to the message | `[Image 1: ...]` / `[已识图1: ...]` per image (plus an OCR excerpt, up to 500 chars, when a provider returned structured OCR) |
-| `interactive` | One-two sentence summary per image + a tool-hint line | short markers + hint to call `vision_describe` / `vision_ground` / `vision_detect` for detail |
-| `manual` | No preprocessing; content returned unchanged | original content; the user/model drives analysis via tools |
-
-With multiple images a header line (`2 images described:` / `已识图2张：`) precedes the
-markers. Failed images never contribute markers (see below).
-
-## Tools
-
-All tools live in a registry and are dispatched via `plugin.callTool(name, args)`.
-Tools taking an `image` expect an attachment object `{ path, contentHash, mime?, bytes? }`.
-
-| Tool | Arguments | Requires | Status |
-|---|---|---|---|
-| `vision_describe` | `image`, `query?` | vision provider | implemented |
-| `vision_ocr` | `image` | vision provider | implemented |
-| `vision_detect` | `image` | vision provider | implemented; strict-JSON array, falls back to raw text |
-| `vision_ground` | `image`, `target` | vision provider | implemented; strict JSON `{found, box, label}`, 0-1000 normalized coords |
-| `vision_bootstrap` | `image` | vision provider | implemented; structured first-pass JSON |
-| `vision_crop` | `image`, `box` | **`sharp` (optional peer dep)** | implemented; clean dependency error when `sharp` is absent |
-| `vision_pixel_diff` | `image`, `reference` | **`sharp` (optional peer dep)** | implemented; clean dependency error when `sharp` is absent |
-| `vision_trace` | — | — | **stub**: returns an explicit not-implemented error |
-| `vision_screenshot` | `html` | `puppeteer-core` (install manually when implemented) | **stub**: returns an explicit not-implemented error |
-
-`sharp` is the only declared (optional) peer dependency in `package.json` — it is actually
-loaded at runtime by `vision_crop` / `vision_pixel_diff`. `puppeteer-core` and `potrace`
-are not declared because no code references them yet; install them manually if/when the
-stubs are implemented.
-
-## Error-handling contract
-
-Failures never leak into model-visible content. `processMessage` returns:
-
-```ts
-interface ProcessMessageResult {
-  rewritten: boolean;        // at least one image described
-  newContent: string;        // model-visible content; unchanged original when nothing succeeded
-  imageCount: number;        // validated image attachments
-  descriptions: string[];    // successful summaries, in image order
-  shadows?: ShadowReplacement[]; // only when eventId was provided
-  hasErrors: boolean;
-  failures?: AttachmentFailure[]; // per-attachment details for the UI layer — never rendered into newContent
-}
-
-interface AttachmentFailure {
-  index: number;                          // position in the original attachments array
-  path: string;
-  reason: 'too_large' | 'symlink' | 'provider';
-  message: string;                        // secret-redacted
-}
-```
-
-- Non-images, out-of-policy paths and unreadable files are silently skipped (not errors).
-- Oversized (`> maxImageBytes`) and symlinked attachments produce `failures` entries.
-- If every image fails, `rewritten` is `false` and `newContent` is the original content.
-
-## Configuration reference
-
-Canonical source: `src/config/schema.ts` (`OmniVisionConfig` / `DEFAULT_CONFIG`).
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `'auto' \| 'interactive' \| 'manual'` | `'auto'` | Pre-step interaction mode (see Modes) |
-| `routing` | `'pre-step' \| 'tool-call' \| 'hybrid'` | `'pre-step'` | **Declarative only** — accepted for forward-compatibility; current runtime always does pre-step bridging with an always-registered tool registry |
-| `providers` | `Array<{ name, model?, apiKeyEnv?, baseUrl? }>` | `[]` | Explicit provider entries, tried in order. `name` maps to a built-in factory (`openai`, `anthropic`, `gemini`, `zhipu`, `ovh`); an unknown name **with** `baseUrl` becomes a generic OpenAI-compatible provider; an unknown name without `baseUrl` is ignored |
-| `localOllama.enabled` | `boolean` | `false` | Add a local Ollama provider to the chain |
-| `localOllama.baseURL` | `string` | `'http://127.0.0.1:11434/v1'` | Ollama OpenAI-compatible endpoint (should be local; warned otherwise) |
-| `localOllama.model` | `string` | `'qwen2.5-vl:7b'` | Ollama vision model |
-| `localLmStudio.enabled` | `boolean` | `false` | Add a local LM Studio provider to the chain |
-| `localLmStudio.baseURL` | `string` | `'http://localhost:1234/v1'` | LM Studio endpoint |
-| `localLmStudio.model` | `string` | `'qwen2.5-vl-7b'` | LM Studio vision model |
-| `freeFallback` | `boolean` | `true` | Append the free cloud tail (OVH / Zhipu / Zen) to the chain |
-| `freeCloudFirst` | `boolean` | `false` | `true` puts free cloud providers (Zhipu, Zen) before OVH in the tail |
-| `freeZen.enabled` | `boolean` | `true` | Add OpenCode Zen free tier when its key is set |
-| `freeZen.model` | `string` | `'big-pickle'` | Zen model id. **Free-tier models rotate over time** — expect to update this when the current id retires |
-| `freeZen.apiKeyEnv` | `string` | `'OPENCODE_API_KEY'` | Env var holding the Zen sign-in key; Zen joins the chain only when it is set |
-| `maxImageBytes` | `number` | `4194304` (4 MiB) | Hard per-image size limit, enforced via `statSync` before any provider call |
-| `maxImagePixels` | `number` | `20000000` (20 MP) | **Schema-level only**: `validateConfig` warns above 100 MP, but there is no runtime pixel check (the plugin never decodes images) |
-| `cache` | `boolean` | `true` | Enable the description cache |
-| `cacheTtlSeconds` | `number` | `3600` | Cache TTL |
-| `cacheMaxEntries` | `number` | `200` | Cache capacity (true LRU eviction) |
-| `timeoutMs` | `number` | `120000` | Total budget for one image across the whole failover chain |
-| `visionTaskTimeoutMs` | `number` | `45000` | Per-provider timeout inside the chain |
-| `language` | `'zh' \| 'en'` | `'zh'` | Language of query templates and text markers |
-| `visionDepth` | `'fast' \| 'standard' \| 'deep'` | `'standard'` | Describe-template detail level (affects the `auto`-mode / `vision_describe` prompt) |
-| `progressiveTools` | `boolean` | `false` | **Declarative only** — kept `false` so the tool surface stays stable from session start (mid-conversation tool-list growth can invalidate long-context KV/prefix caches); no runtime branching is attached yet |
-
-## Security
-
-- **Path policy**: segment-aware whitelist — image files may only be read from the DSH
-  workspace or the OS temp dir (`/tmp-evil` does not match `/tmp`); symlinks are rejected
-  (`lstat`); size enforced with `statSync` before any read.
-- **SSRF protection**: every remote endpoint goes through DNS resolution + private /
-  loopback / reserved IP rejection; `redirect: 'manual'` on all fetches; local backends
-  (Ollama, LM Studio) are explicitly exempted.
-- **Hard read cap**: providers refuse to read files larger than 25 MB regardless of config.
-- **Credential redaction** (3 layers, applied to all error surfaces): exact match of
-  currently-set known secrets (`OPENAI` / `ANTHROPIC` / `GEMINI` / `ZAI` keys), token-shape
-  regexes (`sk-...`, `Bearer ...`, `api_key=...`), and URL userinfo masking. Other keys
-  (e.g. `OPENCODE_API_KEY`) are covered by the shape-based layers.
-- Residual, accepted risk: the SSRF check resolves DNS before `fetch`, which re-resolves —
-  a classic DNS-rebinding TOCTOU window remains.
-
-## Install / build / test
-
-Requires Node.js `>= 22.19`. `npm` and `pnpm` both work (scripts are plain npm scripts).
+> **Status: alpha.** The npm release is upcoming; until then, install from source.
 
 ```bash
-npm install          # or: pnpm install
-npm run build        # vite build (ESM, node22 target) + tsc declaration emit -> dist/
-npm run typecheck    # tsc --noEmit
-npm test             # vitest run
-npm run test:watch   # vitest watch mode
-npm run coverage     # vitest run --coverage
-npm run lint         # biome check src
-npm run format       # biome check --write src
+git clone https://github.com/zsagi1368/dsh-omnivision.git
+cd dsh-omnivision
+npm ci
+npm run build        # produces dist/index.js + type declarations
+npm test             # 232 tests, ~1 s
 ```
 
-Optional peer deps (only if you use the corresponding tools):
+Requires **Node ≥ 22.19**. Optional peer dependency [`sharp`](https://www.npmjs.com/package/sharp)
+enables `vision_crop` / `vision_pixel_diff`.
 
-```bash
-npm i sharp             # vision_crop, vision_pixel_diff
-npm i puppeteer-core    # future vision_screenshot
-```
-
-### Using as a library
+## Quick start
 
 ```ts
 import { createOmnivisionPlugin, resolveConfig } from 'dsh-omnivision';
 
 const plugin = createOmnivisionPlugin({
-  // Partial configs are fine — the plugin merges them over DEFAULT_CONFIG.
-  // Use resolveConfig() yourself when you need the effective config up front.
-  config: resolveConfig({ language: 'en', freeZen: { model: 'big-pickle' } }),
-  workspace: process.cwd(),
-  sessionId: 'session-1',
+  config: resolveConfig({
+    language: 'zh',              // 'zh' | 'en' — marker & prompt language
+    visionDepth: 'standard',     // 'fast' | 'standard' | 'deep'
+  }),
+  workspace: process.cwd(),      // root allowed for reading image attachments
+  sessionId: 'session-1',        // scopes the description cache
 });
 
+// Pre-step: call BEFORE handing the message to DeepSeek
 const result = await plugin.processMessage(content, attachments, eventId);
-if (result.rewritten) sendToDeepSeek(result.newContent);
-if (result.hasErrors) surfaceInUi(result.failures);
 
-const toolResult = await plugin.callTool('vision_ground', {
+if (result.rewritten) {
+  sendToDeepSeek(result.newContent);      // pure text, markers appended
+}
+if (result.hasErrors) {
+  surfaceInUi(result.failures);           // never part of newContent
+}
+
+// Tools: drill into an image on demand
+const hit = await plugin.callTool('vision_ground', {
   image: attachments[0],
   target: 'login button',
 });
 ```
 
-Public API (from `src/index.ts`): `OmniVisionPlugin`, `createOmnivisionPlugin`,
-`PluginContext`, `ProcessMessageResult`, `AttachmentFailure`, `AttachmentFailureReason`,
-`OmniVisionConfig` (type), `DEFAULT_CONFIG`, `resolveConfig`, `validateConfig`,
-config type aliases (`VisionMode`, `RoutingMode`,
-`ImageAttachment`, `VisionDescription`, `FailureKind`), `registerTool` / `getTool` /
-`listTools` / `toolRegistry`, `ToolContext` / `ToolDefinition` / `ToolResult` (types),
-`VisionProvider` / `VisionResult` / `VisionFailure` (types).
+What the model actually sees (auto mode, Chinese):
 
-`plugin.stats()` exposes cache size, blocked providers and chain length; `plugin.dispose()`
-clears cache and breaker state.
+```
+<original user text>
 
-## cordis.patch.yml
+[已识图1: A settings dialog with two columns… 
+OCR: General | Appearance | Advanced]
+```
 
-The bundled patch mounts the plugin with a minimal config (restating schema defaults for
-explicitness) and sets a DSH-side attachment ingest policy (20 MiB / 100 MP / 10000 px).
-Note the two layers are different: the patch's `attachment-local` limits govern what the
-DSH harness accepts when a user attaches an image; the plugin's `maxImageBytes` (4 MiB
-default) governs what the plugin will send to vision providers. Images between the two
-limits stay in the UI but are reported through the `failures` API instead of being
-described.
+## Provider chain
 
-## Development status
+Providers are tried strictly in order until one succeeds. Compose yours in `config.providers`,
+then local backends, then the free fallback tail:
 
-Done (library level):
+| Order | Provider | Default model | Auth | Notes |
+|---|---|---|---|---|
+| 1 | custom entries (`config.providers`) | configurable | optional | named built-ins (`openai`, `anthropic`, `gemini`, `zhipu`, `ovh`) or any OpenAI-compatible `baseUrl` |
+| 2 | LM Studio *(if enabled)* | `qwen2.5-vl-7b` | none | local, `allowLocalNetwork` |
+| 3 | Ollama *(if enabled)* | `qwen2.5-vl:7b` | none | local, `allowLocalNetwork` |
+| 4a | OVH Free | `Qwen2.5-VL-72B-Instruct` | **none** | fully anonymous — zero-config vision |
+| 4b | Zhipu | `glm-4.6v-flash` | `ZAI_API_KEY` | joins only when the key exists |
+| 4c | OpenCode Zen Free | `big-pickle` *(configurable)* | `OPENCODE_API_KEY` | joins only when the key exists |
 
-- KV-cache-safe pre-step bridge, three modes, stable describe templates
-- Provider chain with factories, free fallback (OVH / Zhipu / Zen), Ollama & LM Studio
-- LRU cache, timeouts, persistent (per-instance) circuit breaker, failure classification
-- Tool registry with 9 tools (7 implemented, 2 explicit stubs)
-- Path policy, SSRF gate, symlink rejection, credential redaction
-- Cross-platform test suite under `tests/` (bridge / integration / resilience / security)
-- Build (vite EM + tsc `.d.ts`), biome lint, typecheck all green
+`freeCloudFirst: true` reorders the free tail to key-gated providers before OVH. If a free
+model rejects image input, the chain simply moves on.
 
-Remaining / not done:
+**Environment variables (all optional):**
 
-- **Real-DSH integration testing** — the plugin has not been run inside an actual
-  DeepSeek Harness runtime; the shadow-history ops are produced but no host consumes
-  them yet.
-- `routing` and `progressiveTools` have no runtime effect (declarative placeholders).
-- `maxImagePixels` is not enforced at runtime.
-- `vision_trace` and `vision_screenshot` are stubs.
-- Zen free-tier model rotation and the vision capability of its rotating free models are
-  outside this plugin's control (the failover chain absorbs rejections).
+| Variable | Enables |
+|---|---|
+| `OPENAI_API_KEY` | OpenAI (`gpt-4o`) |
+| `ANTHROPIC_API_KEY` | Anthropic (`claude-3-5-sonnet-20241022`) |
+| `GEMINI_API_KEY` | Google Gemini (`gemini-2.0-flash`) |
+| `ZAI_API_KEY` | Zhipu GLM-V flash |
+| `OPENCODE_API_KEY` | OpenCode Zen free tier |
+
+With **no** environment variables set, the plugin still works end-to-end via the anonymous
+OVH endpoint.
+
+## Modes
+
+| Mode | Behavior |
+|---|---|
+| `auto` *(default)* | Full description markers appended silently; user does nothing |
+| `interactive` | One-line summary + a tool hint; the model drills down via tools when needed |
+| `manual` | No preprocessing — tools remain available for explicit calls |
+
+## Tools
+
+All tools are dispatched through `plugin.callTool(name, args)` and the exported
+registry (`registerTool` / `getTool` / `listTools`). Arguments are validated, and handler
+errors are credential-redacted before returning.
+
+| Tool | Arguments | Depends on | Status |
+|---|---|---|---|
+| `vision_describe` | `image`, `query?` | vision provider | ✅ |
+| `vision_ocr` | `image` | vision provider | ✅ |
+| `vision_detect` | `image`, `category?` | vision provider | ✅ strict-JSON list, raw-text fallback |
+| `vision_ground` | `image`, `target` | vision provider | ✅ strict JSON `{found, box, label}`, normalized 0–1000 coords |
+| `vision_bootstrap` | `image` | vision provider | ✅ structured first-pass analysis |
+| `vision_crop` | `image`, `box` | sharp *(optional peer)* | ✅ crops to PNG in temp dir |
+| `vision_pixel_diff` | `image`, `reference` | sharp *(optional peer)* | ✅ true pixel-space diff, similarity 0–1 |
+| `vision_trace` | — | — | 🚧 stub, explicit not-implemented error |
+| `vision_screenshot` | `html` | — | 🚧 stub, explicit not-implemented error |
+
+Register your own:
+
+```ts
+import { registerTool } from 'dsh-omnivision';
+
+registerTool({
+  name: 'vision_palette',
+  description: 'Extract dominant colors',
+  inputSchema: { required: ['image'] },
+  async handler(ctx, args) { /* ctx.bridge, ctx.image, ctx.config */ },
+});
+```
+
+## Configuration
+
+Partial configs are merged over `DEFAULT_CONFIG`; nested objects merge one level deep.
+Canonical source: [`src/config/schema.ts`](src/config/schema.ts).
+
+```ts
+config: resolveConfig({
+  language: 'zh',
+  visionDepth: 'standard',
+  freeZen: { model: 'big-pickle' },   // rotate the Zen free model here
+})
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `'auto' \| 'interactive' \| 'manual'` | `'auto'` | Image handling strategy |
+| `routing` | `'pre-step' \| 'tool-call' \| 'hybrid'` | `'pre-step'` | Declarative routing hint |
+| `providers` | `Array<{name, model?, apiKeyEnv?, baseUrl?}>` | `[]` | Custom provider overrides, highest priority |
+| `localLmStudio` | `{enabled, baseURL, model}` | `false`, `http://localhost:1234/v1` | Local backend |
+| `localOllama` | `{enabled, baseURL, model}` | `false`, `http://127.0.0.1:11434/v1` | Local backend |
+| `freeFallback` | `boolean` | `true` | Append the free provider tail |
+| `freeCloudFirst` | `boolean` | `false` | Key-gated free providers before OVH |
+| `freeZen` | `{enabled, model, apiKeyEnv}` | `true`, `'big-pickle'`, `'OPENCODE_API_KEY'` | OpenCode Zen free tier |
+| `maxImageBytes` | `number` | `4194304` (4 MiB) | Hard per-image processing limit |
+| `maxImagePixels` | `number` | `20000000` | Schema-level guard (`validateConfig` warns > 100 MP) |
+| `cache` | `boolean` | `true` | Enable the description cache |
+| `cacheTtlSeconds` | `number` | `3600` | Cache entry lifetime |
+| `cacheMaxEntries` | `number` | `200` | LRU capacity per session |
+| `timeoutMs` | `number` | `120000` | Whole-chain timeout budget |
+| `visionTaskTimeoutMs` | `number` | `45000` | Per-provider timeout budget |
+| `language` | `'zh' \| 'en'` | `'zh'` | Marker & prompt language |
+| `visionDepth` | `'fast' \| 'standard' \| 'deep'` | `'standard'` | Describe-prompt detail level |
+| `progressiveTools` | `boolean` | `false` | Declarative tool-exposure hint |
+
+## Error-handling contract
+
+Failures never alter the model-visible content:
+
+```ts
+interface ProcessMessageResult {
+  rewritten: boolean;       // false when nothing succeeded
+  newContent: string;       // original content unless ≥ 1 image succeeded
+  imageCount: number;
+  descriptions: string[];   // successes only
+  hasErrors: boolean;
+  failures?: Array<{
+    index: number;
+    path: string;
+    reason: 'too_large' | 'symlink' | 'provider';
+    message: string;        // redacted
+  }>;
+}
+```
+
+When every image fails, `newContent` is returned untouched and the reason trail lands in
+`failures` — the UI decides what to show.
+
+## Security
+
+- **Path policy** — segment-aware whitelist (workspace + system temp); `/tmp-evil` does not match `/tmp`; symlinks rejected; per-image size limit enforced via `stat`
+- **SSRF guards** — DNS resolution with private/loopback/reserved-range rejection before every remote call; `redirect: 'manual'` everywhere; local backends opt out explicitly
+- **Credential hygiene** — three-layer redaction (exact known keys → token-shape regexes → URL userinfo) applied to every error surface; secrets are read from the environment only
+- **Hard caps** — 25 MB provider read ceiling regardless of configuration
+
+## Development
+
+| Command | Purpose |
+|---|---|
+| `npm run build` | Bundle (`dist/index.js`) + emit declarations |
+| `npm test` | Run the 232-test suite (~1 s, no network) |
+| `npm run coverage` | V8 coverage report |
+| `npm run lint` / `npm run format` | Biome check / autofix |
+| `npm run dev` | Watch rebuild |
+
+The test suite is fully offline (mocked fetch/DNS) and cross-platform — paths are built
+through `os.tmpdir()` so it passes identically on Windows, Linux, and macOS.
+
+## Status & roadmap
+
+- ✅ Core bridge, provider factories, tool registry, security layers
+- ✅ 232 tests · 97% statement coverage · clean typecheck & lint
+- 🔲 Live integration against a running DeepSeek Harness host
+- 🔲 First npm release
+- 🔲 `vision_trace` / `vision_screenshot` implementations
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © zsagi1368
