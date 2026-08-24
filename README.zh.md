@@ -12,7 +12,7 @@
 [![Node](https://img.shields.io/badge/node-%E2%89%A522.19-339933?logo=node.js&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)](tests)
-[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](reports)
+[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](reports)
 
 [English](README.md) · **简体中文**
 
@@ -247,10 +247,22 @@ interface ProcessMessageResult {
 
 ## 安全
 
-- **路径策略** —— 分段级白名单（workspace + 系统临时目录）；`/tmp-evil` 匹配不上 `/tmp`；拒绝符号链接；逐图大小经 `stat` 强制执行
-- **SSRF 防护** —— 每次远程调用前做 DNS 解析并拒绝私有/回环/保留网段；全程 `redirect: 'manual'`；本地后端显式豁免
-- **凭据卫生** —— 三层脱敏（已知密钥精确匹配 → 形状正则 → URL userinfo）覆盖所有错误出口；密钥仅从环境变量读取
-- **硬上限** —— 无论配置如何，provider 读取上限 25 MB
+**文件系统**
+
+- **分段级路径策略** —— 包含性判断基于 `path.relative`，`/tmp-evil` 永远匹配不上 `/tmp`；只允许根的"内容"，根本身不算
+- **根路径规范化** —— workspace / 临时目录 / 额外目录在比较前一律经 `realpathSync` 处理，符号链接组件无法伪造包含关系
+- **叶节点符号链接探测** —— `allowInput` / `allowOutput` 对最终路径分量做 lstat 探测，植入的符号链接直接拒绝
+- **TOCTOU 复核** —— provider 在 `readFileSync` 前一刻复核目标仍是普通文件
+- **大小限制** —— 经 `stat` 强制执行单图上限；无论配置如何，provider 读取硬上限 25 MB
+
+**网络**
+
+- **每次远程调用前的 SSRF 防护** —— DNS 解析后拒绝私有、回环、链路本地、多播/保留网段，**包括 CGNAT（`100.64.0.0/10`）与 IPv4 映射 IPv6 形式**（`::ffff:10.0.0.5` 按其内嵌 v4 地址判断）
+- **不跟随重定向** —— 所有请求 `redirect: 'manual'`；本地后端（Ollama / LM Studio）需显式 `allowLocalNetwork` 豁免
+
+**凭据**
+
+- 三层脱敏覆盖所有错误出口 —— 已知密钥精确匹配 → 形状正则 → URL userinfo；密钥只存在于环境变量中
 
 ## 开发
 
@@ -268,8 +280,8 @@ Linux、macOS 结果一致。
 ## 状态与路线图
 
 - ✅ 核心桥接、Provider 工厂、工具注册表、安全层
-- ✅ 232 个测试 · 97% 语句覆盖率 · typecheck 与 lint 干净
-- 🔲 对运行中的 DeepSeek Harness 宿主做真实集成验证
+- ✅ 已对运行中的 DeepSeek Harness 宿主完成集成验证并加固（monorepo 扩展形态）
+- ✅ 232 个测试 · 98% 语句覆盖率 · typecheck 与 lint 干净
 - 🔲 首次 npm 发布
 - 🔲 `vision_trace` / `vision_screenshot` 实现
 

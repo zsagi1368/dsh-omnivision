@@ -13,7 +13,7 @@ the original images.
 [![Node](https://img.shields.io/badge/node-%E2%89%A522.19-339933?logo=node.js&logoColor=white)](package.json)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](tsconfig.json)
 [![Tests](https://img.shields.io/badge/tests-232%20passing-brightgreen)](tests)
-[![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)](reports)
+[![Coverage](https://img.shields.io/badge/coverage-98%25-brightgreen)](reports)
 
 **English** · [简体中文](README.zh.md)
 
@@ -255,10 +255,22 @@ When every image fails, `newContent` is returned untouched and the reason trail 
 
 ## Security
 
-- **Path policy** — segment-aware whitelist (workspace + system temp); `/tmp-evil` does not match `/tmp`; symlinks rejected; per-image size limit enforced via `stat`
-- **SSRF guards** — DNS resolution with private/loopback/reserved-range rejection before every remote call; `redirect: 'manual'` everywhere; local backends opt out explicitly
-- **Credential hygiene** — three-layer redaction (exact known keys → token-shape regexes → URL userinfo) applied to every error surface; secrets are read from the environment only
-- **Hard caps** — 25 MB provider read ceiling regardless of configuration
+**Filesystem**
+
+- **Segment-aware path policy** — containment checks run on `path.relative`, so `/tmp-evil` never matches `/tmp`; only contents of allowed roots count, never a root itself
+- **Canonicalized roots** — workspace / temp / extra dirs pass through `realpathSync` before any comparison, so symlinked path components cannot smuggle containment
+- **Leaf-symlink probes** — `allowInput` / `allowOutput` lstat-probe the final path component; planted symlinks are rejected outright
+- **TOCTOU re-check** — providers re-verify the target is a plain file immediately before `readFileSync`
+- **Size limits** — per-image limit enforced via `stat`; hard 25 MB provider read ceiling regardless of configuration
+
+**Network**
+
+- **SSRF guards before every remote call** — DNS resolution followed by rejection of private, loopback, link-local, multicast/reserved ranges **including CGNAT (`100.64.0.0/10`) and IPv4-mapped IPv6 forms** (`::ffff:10.0.0.5` is judged by its embedded v4 address)
+- **No redirect following** — `redirect: 'manual'` on every request; local backends (Ollama / LM Studio) require an explicit `allowLocalNetwork` opt-out
+
+**Credentials**
+
+- Three-layer redaction on every error surface — exact known keys → token-shape regexes → URL userinfo; secrets live only in environment variables
 
 ## Development
 
@@ -276,8 +288,8 @@ through `os.tmpdir()` so it passes identically on Windows, Linux, and macOS.
 ## Status & roadmap
 
 - ✅ Core bridge, provider factories, tool registry, security layers
-- ✅ 232 tests · 97% statement coverage · clean typecheck & lint
-- 🔲 Live integration against a running DeepSeek Harness host
+- ✅ Integrated and hardened against a live DeepSeek Harness host (monorepo extension)
+- ✅ 232 tests · 98% statement coverage · clean typecheck & lint
 - 🔲 First npm release
 - 🔲 `vision_trace` / `vision_screenshot` implementations
 
