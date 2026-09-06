@@ -5,3 +5,6 @@ coverage/
 *.log
 .DS_Store
 *.sum
+
+# Backup area (deletion right belongs to user)
+del/
