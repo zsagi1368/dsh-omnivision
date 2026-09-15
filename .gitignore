@@ -1,5 +1,7 @@
 node_modules/
-dist/
+# Prebuilt artifacts are committed (TC-B2-2.1a / P-9 Option A): dist/ is tracked,
+# but source maps stay excluded (not needed at runtime; keeps the tree lean).
+dist/**/*.map
 coverage/
 *.local
 *.log
