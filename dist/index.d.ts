@@ -1,6 +1,8 @@
 export type { OmniVisionConfig } from './config/schema.ts';
 export { DEFAULT_CONFIG, resolveConfig, validateConfig } from './config/schema.ts';
 export type { FailureKind, ImageAttachment, RoutingMode, VisionDescription, VisionMode, } from './config/types.ts';
+export type { CordisContextLike, MountedOmnivision } from './cordis-adapter.ts';
+export { apply, inject, mountedFor, name } from './cordis-adapter.ts';
 export type { AttachmentFailure, AttachmentFailureReason, PluginContext, ProcessMessageResult, } from './plugin/index.ts';
 export { createOmnivisionPlugin, OmniVisionPlugin } from './plugin/index.ts';
 export { getTool, listTools, registerTool, toolRegistry } from './tools/index.ts';

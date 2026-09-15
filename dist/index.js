@@ -142,8 +142,8 @@ function getKnownSecrets() {
     "ZAI_API_KEY",
     "OPENCODE_API_KEY"
   ];
-  for (const name of keyNames) {
-    const value = process.env[name];
+  for (const name2 of keyNames) {
+    const value = process.env[name2];
     if (value && value.length > 10) {
       secrets.push(value);
     }
@@ -646,8 +646,8 @@ const toolRegistry = /* @__PURE__ */ new Map();
 function registerTool(def) {
   toolRegistry.set(def.name, def);
 }
-function getTool(name) {
-  return toolRegistry.get(name);
+function getTool(name2) {
+  return toolRegistry.get(name2);
 }
 function listTools() {
   return Array.from(toolRegistry.values());
@@ -1304,15 +1304,15 @@ function createZhipuProvider(opts = {}) {
     }
   };
 }
-function createOpenAICompatibleProvider(name, opts = {}) {
+function createOpenAICompatibleProvider(name2, opts = {}) {
   const baseUrl = opts.baseUrl;
   if (!baseUrl) {
-    throw new Error(`Provider "${name}": baseUrl is required for OpenAI-compatible providers`);
+    throw new Error(`Provider "${name2}": baseUrl is required for OpenAI-compatible providers`);
   }
   const model = opts.model ?? "qwen2.5-vl:7b";
   const allowedReadRoots = opts.allowedReadRoots ?? [];
   return {
-    name,
+    name: name2,
     defaultModel: model,
     category: opts.category ?? "local",
     speedClass: "medium",
@@ -1320,12 +1320,12 @@ function createOpenAICompatibleProvider(name, opts = {}) {
       const headers = { "Content-Type": "application/json" };
       if (opts.apiKeyEnv) {
         const apiKey = process.env[opts.apiKeyEnv];
-        if (!apiKey) return authMissing(name);
+        if (!apiKey) return authMissing(name2);
         headers.Authorization = `Bearer ${apiKey}`;
       }
       return executeOpenAiWire(
         {
-          name,
+          name: name2,
           model,
           endpoint: joinUrl(baseUrl, "/chat/completions"),
           headers,
@@ -1636,12 +1636,36 @@ class OmniVisionPlugin {
 function createOmnivisionPlugin(ctx) {
   return new OmniVisionPlugin(ctx);
 }
+const name = "dsh-omnivision";
+const inject = [];
+const mounted = /* @__PURE__ */ new WeakMap();
+function mountedFor(ctx) {
+  return mounted.get(ctx);
+}
+function apply(ctx, config) {
+  const resolved = resolveConfig(config ?? {});
+  const workspace = process.cwd();
+  const plugin = createOmnivisionPlugin({ config: resolved, workspace });
+  mounted.set(ctx, { plugin, config: resolved, workspace });
+  for (const warning of validateConfig(resolved)) {
+    ctx.logger?.warn?.(`[omnivision] ${warning}`);
+  }
+  ctx.logger?.info?.(
+    `[omnivision] ready (mode=${resolved.mode}, providers=${plugin.stats().providers})`
+  );
+  ctx.effect?.(() => plugin.dispose(), "omnivision-dispose");
+  return plugin;
+}
 export {
   DEFAULT_CONFIG,
   OmniVisionPlugin,
+  apply,
   createOmnivisionPlugin,
   getTool,
+  inject,
   listTools,
+  mountedFor,
+  name,
   registerTool,
   resolveConfig,
   toolRegistry,

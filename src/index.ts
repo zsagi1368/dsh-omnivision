@@ -10,6 +10,8 @@ export type {
   VisionDescription,
   VisionMode,
 } from './config/types.ts';
+export type { CordisContextLike, MountedOmnivision } from './cordis-adapter.ts';
+export { apply, inject, mountedFor, name } from './cordis-adapter.ts';
 export type {
   AttachmentFailure,
   AttachmentFailureReason,
