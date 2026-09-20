@@ -1653,7 +1653,7 @@ function apply(ctx, config) {
   ctx.logger?.info?.(
     `[omnivision] ready (mode=${resolved.mode}, providers=${plugin.stats().providers})`
   );
-  ctx.effect?.(() => plugin.dispose(), "omnivision-dispose");
+  ctx.effect?.(() => () => plugin.dispose(), "omnivision-dispose");
   return plugin;
 }
 export {

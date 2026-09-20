@@ -31,8 +31,15 @@ export interface CordisContextLike {
         info?(message: string): void;
         warn?(message: string): void;
     };
-    /** Register a teardown callback disposed with the owning fiber. */
-    effect?(teardown: () => unknown, label?: string): unknown;
+    /**
+     * Host cordis fiber effect face (`ctx.effect(setup, label?)`): `setup` runs
+     * IMMEDIATELY and its RETURN VALUE — a disposer, or an iterable of disposers
+     * (cordis `SyncEffect`) — is what gets collected for fiber unload. Verified
+     * shape (FileHub aab73d7 / AutoPilot 3bc4963 / verticals cordis.ts:96); the
+     * old `(teardown: () => unknown)` face was misleading: passing a teardown
+     * directly makes it run at mount time and collects nothing for unload.
+     */
+    effect?(setup: () => (() => void) | Iterable<() => void>, label?: string): unknown;
 }
 /** What `apply` mounted, exposed for tests and diagnostics. */
 export interface MountedOmnivision {
