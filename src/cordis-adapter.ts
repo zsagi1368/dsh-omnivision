@@ -36,8 +36,15 @@ export interface CordisContextLike {
     info?(message: string): void;
     warn?(message: string): void;
   };
-  /** Register a teardown callback disposed with the owning fiber. */
-  effect?(teardown: () => unknown, label?: string): unknown;
+  /**
+   * Host cordis fiber effect face (`ctx.effect(setup, label?)`): `setup` runs
+   * IMMEDIATELY and its RETURN VALUE — a disposer, or an iterable of disposers
+   * (cordis `SyncEffect`) — is what gets collected for fiber unload. Verified
+   * shape (FileHub aab73d7 / AutoPilot 3bc4963 / verticals cordis.ts:96); the
+   * old `(teardown: () => unknown)` face was misleading: passing a teardown
+   * directly makes it run at mount time and collects nothing for unload.
+   */
+  effect?(setup: () => (() => void) | Iterable<() => void>, label?: string): unknown;
 }
 
 /** What `apply` mounted, exposed for tests and diagnostics. */
@@ -81,6 +88,11 @@ export function apply(
   ctx.logger?.info?.(
     `[omnivision] ready (mode=${resolved.mode}, providers=${plugin.stats().providers})`,
   );
-  ctx.effect?.(() => plugin.dispose(), 'omnivision-dispose');
+  // Effect contract (TC-B4-OM1, RA1d fix14 judgment): setup runs immediately
+  // and its return value is the unload disposer — double-arrow form. The old
+  // `() => plugin.dispose()` called dispose at MOUNT time (immediate-call
+  // trap) and collected nothing for unload. dispose is idempotent
+  // (plugin/index.ts:419 — two Map.clear calls), so double-run is safe.
+  ctx.effect?.(() => () => plugin.dispose(), 'omnivision-dispose');
   return plugin;
 }
