@@ -50,8 +50,8 @@ describe('cordis adapter shell', () => {
     const effect = vi.fn();
     apply({ effect });
     expect(effect).toHaveBeenCalledWith(expect.any(Function), 'omnivision-dispose');
-    const teardown = effect.mock.calls[0]?.[0] as () => void;
-    expect(() => teardown()).not.toThrow();
+    const setup = effect.mock.calls[0]?.[0] as () => void;
+    expect(() => setup()).not.toThrow();
   });
 
   it('mountedFor exposes the mount record per context', () => {
