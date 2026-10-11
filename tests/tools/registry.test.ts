@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 import { buildDescribeQuery } from '../../src/bridge/message-rewriter.ts';
 import type { VisionBridge } from '../../src/bridge/vision-bridge.ts';
@@ -5,6 +6,18 @@ import { DEFAULT_CONFIG } from '../../src/config/schema.ts';
 import type { ImageAttachment, VisionDescription } from '../../src/config/types.ts';
 import { getTool, listTools, registerTool, validateToolArgs } from '../../src/tools/index.ts';
 import type { ToolContext } from '../../src/tools/types.ts';
+
+// sharp is an optional peer resolved through a non-literal dynamic import, so
+// it cannot be mocked from here; the two missing-dependency locks below only
+// exercise their branch where sharp is genuinely absent.
+const sharpAvailable = ((): boolean => {
+  try {
+    createRequire(import.meta.url).resolve('sharp');
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 // Snapshot before any test mutates the shared registry.
 const INITIAL_TOOL_NAMES = listTools()
@@ -228,7 +241,7 @@ describe('built-in tool handlers', () => {
     });
   });
 
-  it('vision_crop reports the missing sharp dependency (box never touched)', async () => {
+  it.skipIf(sharpAvailable)('vision_crop reports the missing sharp dependency (box never touched)', async () => {
     const bridge = bridgeReturning({ summary: 's' });
     const tool = getTool('vision_crop');
     const result = await tool?.handler(ctx(bridge), { image, box: [1, 2, 3, 4] });
@@ -237,7 +250,7 @@ describe('built-in tool handlers', () => {
     expect(bridge.processImages).not.toHaveBeenCalled();
   });
 
-  it('vision_pixel_diff reports the missing sharp dependency', async () => {
+  it.skipIf(sharpAvailable)('vision_pixel_diff reports the missing sharp dependency', async () => {
     const tool = getTool('vision_pixel_diff');
     const result = await tool?.handler(ctx(bridgeReturning({ summary: 's' })), {
       image,
